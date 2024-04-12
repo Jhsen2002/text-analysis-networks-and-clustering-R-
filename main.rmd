@@ -1,0 +1,302 @@
+---
+title: "assignment3"
+author: "Yong J-Hsen"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, message = FALSE)
+```
+## Set up
+```{r, results='hide'}
+rm(list=ls())
+library(slam)
+library(tm)
+library(SnowballC)
+library(dplyr)
+library(ggplot2)
+library(lsa)
+library(igraph)
+library(bipartite)
+library(cluster)
+set.seed(32025998)
+```
+
+
+## Q1. Data collection
+The broad topic that I chose was video games. I found fifteen articles talking about the good, the bad, and the evolution of gaming and its industry, 5 articles for each topic. All articles are cited in the references below.
+
+## Q2. Data processing
+I selected parts of the articles that were relevant to their specific category. I compiled the text into .txt documents which I keep inside a folder called corpus, the folder has 15 .txt documents.
+```{r}
+cname = file.path(".", "corpus")
+docs = Corpus(DirSource((cname)))
+print(summary(docs))
+```
+
+## Q3. Text processing
+Applied standard text processing as taught in lecturers before creating the corpus such as removing numbers, white spaces, stop words, punctuation, etc. Also added "also","can", and "game" to the stop words as they were the most commonly occurring words and removing them improving clustering results significantly. The finished dtm has 27 terms.
+
+```{r}
+# Change all to lower case, remove numbers, punctuation, white spaces
+docs <- tm_map(docs, content_transformer(tolower))
+docs <- tm_map(docs, removeNumbers)
+docs <- tm_map(docs, removePunctuation)
+docs <- tm_map(docs, stripWhitespace)
+# stemming, removes prefix/suffix of words
+docs <- tm_map(docs, stemDocument, language = "english")
+# Custom list of words to not include
+custom_stopwords <- c(stopwords("english"), "also", "can","game")
+docs <- tm_map(docs, removeWords, custom_stopwords)
+#Create document term matrix
+dtm <- DocumentTermMatrix(docs)
+dtm = removeSparseTerms(dtm,sparse= 0.45)
+#inspect(dtm)
+dtmf = as.data.frame(as.matrix(dtm))
+dtmf[1:10]
+```
+
+## Q4. Hierarchical clustering
+The clustering with 27 terms seems to perform well, with a classification accuracy of 86%. The evolution group is all correctly classified but there are some mistakes in the good/bad, could be due to the similarity in terms used. The silhouette score shows that most of the silhouette width is positive, which suggests that most nodes are correctly clustered, but there is still some values close to 0 and 1 negative number.
+```{r, echo=FALSE}
+#dendogram
+# Convert dtm to a matrix
+m = as.matrix(dtm)
+# Transpose the matrix so that documents are columns
+mt = t(m)
+# Calculate the cosine similarity
+cos_sim = cosine(mt)
+# Convert similarity to distance
+cos_dist = 1 - cos_sim
+# Perform hierarchical clustering
+hcosine = hclust(as.dist(cos_dist))
+# Plot the dendrogram
+plot(hcosine)
+
+# Group label
+known_labels = c("bad", "bad", "bad", "bad","bad","evolution", "evolution","evolution", "evolution","evolution", "good", "good", "good", "good", "good")
+
+# Cut the tree into 3 clusters
+cluster_labels <- cutree(hcosine, k=3)
+
+#silhouette score
+cat("The silhouette score: \n" )
+silhouette(cluster_labels,as.dist(cos_dist))
+
+# Measure accuracy
+cat("The clustering matrix: \n")
+table(GroupNames = known_labels, Clusters = cluster_labels)
+correctly_classified <- 3+5+5 # Sum of majority
+accuracy <- correctly_classified / 15
+cat("the Accuracy of the matrix is: ",accuracy )
+
+```
+## Q5. Single-mode network
+Evo4 has the average score, making it the "most" important node. A transitivity of 1 means that the graph is transitive and that all nodes are able to reach all other nodes via other nodes. The degree score indicates that all nodes have the max number of edges and that all nodes have some similarity to other nodes. 
+
+The key node(evo4) has its edges colored red , the node have been colored based on their category for easier grouping, and the edge width thickness is based on the edge weight.
+```{r, echo=FALSE, fig.height=11, fig.width=11}
+# start with original document-term matrix
+dtmsx = as.matrix(dtm)
+# convert to binary matrix
+dtmsx = as.matrix((dtmsx > 0) + 0)
+# multiply binary matrix by its transpose
+ByAbsMatrix = dtmsx %*% t(dtmsx)
+# make leading diagonal zero
+diag(ByAbsMatrix) = 0
+# create graph object 
+ByAbs = graph_from_adjacency_matrix(ByAbsMatrix,mode = "undirected", weighted = TRUE)
+# evo4 is the most central node
+closeness = format(igraph::closeness(ByAbs), digits = 2)
+# How well connected it is, all nodes are connected
+cat("The transitivity score: ", igraph::transitivity(ByAbs))
+#  bridge of the shortest path between nodes
+betweenness = igraph::betweenness(ByAbs)
+# all documents are fully connected
+degree = igraph::degree(ByAbs)
+
+e = igraph::evcent(ByAbs)
+
+network_scores <- data.frame(closeness = closeness, degree = degree, betweenness = betweenness, Eigenvector = e$vector)
+
+rownames(network_scores) <- names(closeness)
+network_scores[, 1:3] <- lapply(network_scores[, 1:3], as.numeric)
+network_scores$Avg <- rowMeans(network_scores[, 1:3])
+cat("The table of network scores: \n")
+network_scores
+
+max_row <- network_scores[which.max(network_scores$Avg), ]
+cat("The most important row: \n")
+max_row
+E(ByAbs)$color <- "lightgray"
+V(ByAbs)$color[grepl("evo", V(ByAbs)$name)] <- "yellow"
+V(ByAbs)$color[grepl("good", V(ByAbs)$name)] <- "green"
+V(ByAbs)$color[grepl("bad", V(ByAbs)$name)] <- "red"
+# Find the edges of node "evo4.txt"
+edges_to_color <- incident(ByAbs, "evo4.txt", mode = "all")
+
+# Color red
+E(ByAbs)[edges_to_color]$color <- "red"
+
+edges_to_color <- incident(ByAbs, "good2.txt", mode = "all")
+
+
+layout <- layout_with_fr(ByAbs)
+
+E(ByAbs)$width = E(ByAbs)$weight/5
+
+set.seed(32025998)
+# Plot the graph
+plot(ByAbs, layout = layout, vertex.size = 10, edge.width = E(ByAbs)$width, vertex.label.color = "black")
+
+```
+
+## Q6. Single-mode network for words
+The transitivity and degree of this network is similar to Q5, transitivity score of 1 and maximum number of edge connected for each node. "will" has the highest average score, making it the most important . 
+
+Similar to graph in Q5,the edge width is based off their weight, the key node is colored in yellow, and I avoided formatting the edges as it will make it very cluttered.
+```{r, echo=FALSE, fig.height=11, fig.width=11}
+dtmsx = as.matrix(dtm)
+# convert to binary matrix
+dtmsx = as.matrix((dtmsx > 0) + 0)
+# multiply transpose binary matrix by binary matrix
+ByTokenMatrix = t(dtmsx) %*% dtmsx
+# make leading diagonal zero
+diag(ByTokenMatrix) = 0
+ByAbs = graph_from_adjacency_matrix(ByTokenMatrix,mode = "undirected", weighted = TRUE)
+set.seed(32025998)
+
+closenessW = format(igraph::closeness(ByAbs), digits = 2)
+
+cat("The transitivity score: ", igraph::transitivity(ByAbs))
+
+betweennessW = igraph::betweenness(ByAbs)
+
+degreeW = igraph::degree(ByAbs)
+
+eW = igraph::evcent(ByAbs)
+
+network_scoresW <- data.frame(closeness = closenessW, degree = degreeW, betweenness = betweennessW, Eigenvector = eW$vector)
+
+rownames(network_scoresW) <- names(closenessW)
+network_scoresW[, 1:3] <- lapply(network_scoresW[, 1:3], as.numeric)
+network_scoresW$Avg <- rowMeans(network_scoresW[, 1:3])
+cat("The table of network scores: \n")
+network_scoresW
+max_row <- network_scoresW[which.max(network_scoresW$Avg), ]
+cat("The most important row: \n")
+max_row
+V(ByAbs)$color[grepl("will", V(ByAbs)$name)] <- "yellow"
+E(ByAbs)$width = E(ByAbs)$weight/4
+plot(ByAbs)
+```
+
+## Q7. Bipartite graph
+The bipartite graph does seem to show a discernible pattern. All evolution nodes are on the left side of the graph whereas bad and good can be seen on the right side as one big group. This could be due to similar words being used when describing the good and bad of video games without the context of the word taken into account. 
+```{r, echo=FALSE, fig.height=11, fig.width=11}
+# Create a data frame from the DTM
+dtmsa =dtmf
+
+# Add row names
+dtmsa$docID <- rownames(dtmsa)
+
+# Initialize empty data frame
+dtmsb <- data.frame()
+
+# Loop over each term in each document
+for (i in 1:nrow(dtmsa)){
+  for (j in 1:(ncol(dtmsa)-1)){
+    touse <- cbind(dtmsa[i,j], dtmsa[i,ncol(dtmsa)], colnames(dtmsa[j]))
+    dtmsb <- rbind(dtmsb, touse)
+  }
+}
+
+# Assign column names
+colnames(dtmsb) <- c("weight", "docID", "token")
+
+# Remove term-document pairs with 0 weight
+dtmsc <- dtmsb[dtmsb$weight != 0,]
+
+# Put columns in order: docID, token, weight
+dtmsc <- dtmsc[,c(2,3,1)]
+
+# Create graph object and declare bipartite
+g <- graph.data.frame(dtmsc, directed=FALSE)
+
+closeness = format(igraph::closeness(g), digits = 2)
+# How well connected it is, all nodes are connected
+cat("The transitivity score: ", igraph::transitivity(g))
+#  bridge of the shortest path between nodes
+betweenness = igraph::betweenness(g)
+# all documents are fully connected
+degree = igraph::degree(g)
+
+e = igraph::evcent(g)
+
+network_scores <- data.frame(closeness = closeness, degree = degree, betweenness = betweenness, Eigenvector = e$vector)
+
+rownames(network_scores) <- names(closeness)
+network_scores[, 1:3] <- lapply(network_scores[, 1:3], as.numeric)
+network_scores$Avg <- rowMeans(network_scores[, 1:3])
+cat("The table of network scores: \n")
+network_scores
+max_row <- network_scores[which.max(network_scores$Avg), ]
+cat("The most important row: \n")
+max_row
+# Assign colors to vertices based on type (document or token)
+V(g)$type <- bipartite_mapping(g)$type
+V(g)$color <- ifelse(V(g)$type, "lightblue", "salmon")
+
+# Set shapes based on type
+V(g)$shape <- ifelse(V(g)$type, "circle", "square")
+
+# Set color of edges
+E(g)$color <- "lightgray"
+E(g)$weight <- as.numeric(E(g)$weight)
+E(g)$width <- E(g)$weight/3
+set.seed(32025998)
+# Plot graph
+V(g)$color[grepl("evo", V(g)$name)] <- "yellow"
+V(g)$color[grepl("good", V(g)$name)] <- "green"
+V(g)$color[grepl("bad", V(g)$name)] <- "red"
+plot(g)
+
+```
+
+## Q8. Brief summary
+When it comes to readability, the hierarchical clustering with a dendrogram is clearly more readable than the network and anyone can easily interpret the graph. However, if deeper analysis and insight is required, the network graph provides a more complex and comprehensive representation of the data as gives a detailed visualization of relationships, depicting both the direct and indirect interactions between nodes. Therefore, the best approach will depend on the situation.
+
+## References
+\n 1.Video gaming may be associated with better cognitive performance in children. (2022, October 24). National Institutes of Health (NIH). https://www.nih.gov/news-events/news-releases/video-gaming-may-be-associated-better-cognitive-performance-children 
+
+\n 2.Shatz, I. (2019). The Cognitive Benefits of Playing Video Games – Effectiviology. Effectiviology.com. https://effectiviology.com/cognitive-benefits-of-playing-video-games/ 
+
+\n 3.Brennan, D. (2021, October 25). Are There Mental Health Benefits of Video Games? WebMD. https://www.webmd.com/mental-health/mental-health-benefits-of-video-games 
+
+\n 4.Group, T. G. (n.d.). The Benefits of Video Games & VR for Seniors – The Goodman Group. Blog.thegoodmangroup.com. https://blog.thegoodmangroup.com/best-video-games-for-seniors 
+
+\n 5.Jiménez-Muñoz, L., Peñuelas-Calvo, I., Calvo-Rivera, P., Díaz-Oliván, I., Moreno, M., Baca-García, E., & Porras-Segovia, A. (2021). Video Games for the Treatment of Autism Spectrum Disorder: A Systematic Review. Journal of Autism and Developmental Disorders, 52(1). https://doi.org/10.1007/s10803-021-04934-9 
+
+\n 6.Video Games and Mental Health: Risk Factors and Benefits. (2022, June 15). Psych Central. https://psychcentral.com/depression/can-video-games-cause-depression#how-gaming-can-cause-depression 
+
+\n 7.Raymer, D. (2021, September 1). Internet gaming disorder: A real mental health issue on the rise in adolescents and young adults. Counseling Today.  https://ct.counseling.org/2021/09/internet-gaming-disorder-a-real-mental-health-issue-on-the-rise-in-adolescents-and-young-adults/
+
+\n 8.Video Games, Mental Health, and Addiction – The Good, The Bad, and The Ugly: Family Addiction Specialist: Addiction Counselor. (n.d.). Www.familyaddictionspecialist.com. https://www.familyaddictionspecialist.com/blog/video-games-mental-health-and-addiction-the-good-the-bad-and-the-ugly
+
+\n 9.Grinspoon, P. (2020, December 22). The health effects of too much gaming. Harvard Health Blog; Harvard Health Publishing. https://www.health.harvard.edu/blog/the-health-effects-of-too-much-gaming-2020122221645
+
+\n 10.Barden, A. (2022, June 2). Can Video Games Cause Health Problems? All about Vision. https://www.allaboutvision.com/resources/human-interest/video-games-and-your-health/
+
+\n 11.Quigley, K. (2022, December 15). Features of Unreal Engine 5 That Will Revolutionise the Gaming Industry. Starloop Studios. https://starloopstudios.com/features-of-unreal-engine-5-that-will-revolutionise-the-gaming-industry/
+
+\n 12.Abdulla, O. (2021, September 20). How gaming industry has evolved over the last 20 years. Https://Techxmedia.com/. https://techxmedia.com/how-gaming-industry-has-evolved-over-the-last-20-years/
+
+\n 13.The Evolution of the Gaming Industry. (2022, June 17). Https://Www.outlookindia.com/. https://www.outlookindia.com/business-spotlight/the-evolution-of-the-gaming-industry-news-202966
+
+\n 14.Robson, K. (2023, April 3). Gaming industry to be worth $470bn by 2030 despite setbacks, experts predict. Verdict. https://www.verdict.co.uk/gaming-industry-to-be-worth-470bn-by-2030-despite-setbacks-experts-predict/
+
+\n 15.Beattie, A. (2021, October 31). How the Video Game Industry Is Changing. Investopedia. https://www.investopedia.com/articles/investing/053115/how-video-game-industry-changing.asp
+
+
+
+
